@@ -225,7 +225,7 @@ credits_start = float(sys.argv[7])
 credits_end = float(sys.argv[8])
 
 vf = "yadif=mode=0:parity=0:deint=0," if deinterlace else ""
-vf += "scale=64:36,format=gray"
+vf += "scale=128:72,format=gray"
 
 # Get FPS to convert time→frame numbers
 fps_proc = subprocess.run([
@@ -251,11 +251,14 @@ proc = subprocess.Popen([
     '-f', 'rawvideo', '-pix_fmt', 'gray', '-'
 ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-CHUNK = 64 * 36
+CHUNK = 128 * 72
+MAX_DUP_RUN = 6          # max consecutive duplicate frames (~200ms at 30fps)
+                         # real telecine/on-twos dupes are 2-3 frames max
 prev_data = None
 current_unique = 1
 entries = []
 frame_num = 0
+dup_run = 0
 
 while True:
     data = proc.stdout.read(CHUNK)
@@ -273,6 +276,18 @@ while True:
         diff = sum(abs(a - b) for a, b in zip(data, prev_data)) / CHUNK
         if diff < threshold:
             is_unique = False
+
+    # Cap consecutive duplicate runs — slow pans and static shots can produce
+    # hundreds of near-identical frames at low resolution; cap prevents frozen
+    # video. Real telecine/on-twos duplicates never exceed 3-4 frames in a row.
+    if not is_unique and mode == "ai":
+        dup_run += 1
+        if dup_run >= MAX_DUP_RUN:
+            is_unique = True
+            dup_run = 0
+    else:
+        dup_run = 0
+
     # Only ai frames can be sources for other ai frames.
     # Skip frames must never become current_unique or the consumer will wait
     # for an upscaled file that was never produced.
@@ -502,6 +517,12 @@ for INPUT_FILE in "${FILES[@]}"; do
     # Duplicate frames reuse the same upscaled PNG. IS_LAST controls cleanup.
     log "[$CURRENT/$TOTAL] Encoding ($CODEC CRF $CRF $PRESET 10-bit)..."
 
+    # Extract audio/subs first — decouples them from the slow video pipe,
+    # preventing drift when the pipe stalls waiting for upscaled frames.
+    ffmpeg -i "$INPUT_FILE" -vn \
+        -c:a copy -c:s copy \
+        "$WORK/audio.mkv" -y 2>/dev/null
+
     set +eo pipefail
     (
         while IFS=' ' read -r fnum src is_last mode; do
@@ -528,14 +549,19 @@ for INPUT_FILE in "${FILES[@]}"; do
             echo "$fnum" > "$WORK/.encoded_frames"
         done < "$WORK/frame_map.txt"
     ) | ffmpeg -framerate "$FPS" -f image2pipe -vcodec png -i - \
-        -i "$INPUT_FILE" \
-        -map 0:v -map 1:a? -map 1:s? \
         "${VCODEC[@]}" \
-        -c:a copy -c:s copy \
-        -movflags +faststart \
-        "$WORK/out.${OUTPUT_EXT}" -y 2>"$WORK/encode.log"
+        "$WORK/video.mkv" -y 2>"$WORK/encode.log"
     PIPE_EXIT=$?
     set -eo pipefail
+
+    # Mux video + audio — both streams have clean timestamps, guaranteed sync
+    if [ $PIPE_EXIT -eq 0 ]; then
+        ffmpeg -i "$WORK/video.mkv" -i "$WORK/audio.mkv" \
+            -map 0:v -map 1:a? -map 1:s? \
+            -c:v copy -c:a copy -c:s copy \
+            -movflags +faststart \
+            "$WORK/out.${OUTPUT_EXT}" -y 2>/dev/null
+    fi
 
     wait "$UPSCALER_PID" 2>/dev/null
     UPSCALE_EXIT=$?
