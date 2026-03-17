@@ -21,7 +21,7 @@ MODEL="realesr-animevideov3"    # 2x anime: realesr-animevideov3
                                 # 4x anime: realesrgan-x4plus-anime
 CODEC="libx265"                 # libx264 | libx265 | libsvtav1
 CRF=14                          # Near-transparent for anime
-PRESET="slow"                   # Better compression efficiency
+PRESET="medium"                 # Fast enough, quality identical at CRF 14
 PIX_FMT="yuv420p10le"           # 10-bit (eliminates banding)
 OUTPUT_EXT="mkv"                # mkv supports all codecs/subs
 TEMP_DIR="${TMPDIR:-/tmp}/animescale"
