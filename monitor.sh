@@ -3,7 +3,7 @@
 # Auto-detects active work directory, shows dedup/intro-skip stats, GPU, temps, ETA.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TEMP_DIR="/home/emma/Downloads/temp/upscale"
+TEMP_DIR="${TMPDIR:-/tmp}/animescale"
 LOG_FILE="$SCRIPT_DIR/upscale.log"
 LOCK_FILE="$SCRIPT_DIR/.upscale.lock"
 
@@ -171,7 +171,7 @@ while true; do
     GPU1=$(cat /sys/class/drm/card1/device/gpu_busy_percent 2>/dev/null || echo "?")
     echo "  GPU:   iGPU ${IGPU}%  |  RX 6650 XT ${GPU1}%"
     echo "  Temp:  CPU $(sensors 2>/dev/null | grep -m1 "Tctl:" | awk '{print $2}')  |  GPU $(sensors 2>/dev/null | grep "junction:" | tail -1 | awk '{print $2}')"
-    FREE=$(df -h /home/emma/Downloads 2>/dev/null | tail -1 | awk '{print $4}')
+    FREE=$(df -h "$TEMP_DIR" 2>/dev/null | tail -1 | awk '{print $4}')
     USED=$(du -sh "$TEMP_DIR" 2>/dev/null | cut -f1)
     echo "  NVMe:  ${USED:-0} used  |  ${FREE:-?} free"
     echo ""

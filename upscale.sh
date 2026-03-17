@@ -24,13 +24,13 @@ CRF=14                          # Near-transparent for anime
 PRESET="slow"                   # Better compression efficiency
 PIX_FMT="yuv420p10le"           # 10-bit (eliminates banding)
 OUTPUT_EXT="mkv"                # mkv supports all codecs/subs
-TEMP_DIR="/home/emma/Downloads/temp/upscale"
+TEMP_DIR="${TMPDIR:-/tmp}/animescale"
 MIN_FREE_GB=25
 DUP_THRESHOLD=1.0               # Duplicate detection (lower = stricter)
 
 # Jellyfin Intro Skipper — set API key to enable, empty to disable
 JELLYFIN_URL="http://localhost:8096"
-JELLYFIN_API_KEY="b0c55cfefeaa448f8f8f67ae1f58b661"
+JELLYFIN_API_KEY=""             # set your API key here to enable intro/credits skip
 # =======================================================
 
 # ---- Args ----
