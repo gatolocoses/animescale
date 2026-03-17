@@ -273,7 +273,10 @@ while True:
         diff = sum(abs(a - b) for a, b in zip(data, prev_data)) / CHUNK
         if diff < threshold:
             is_unique = False
-    if is_unique:
+    # Only ai frames can be sources for other ai frames.
+    # Skip frames must never become current_unique or the consumer will wait
+    # for an upscaled file that was never produced.
+    if is_unique and mode == "ai":
         current_unique = frame_num
     entries.append((frame_num, current_unique, mode))
     prev_data = data
