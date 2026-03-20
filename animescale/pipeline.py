@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from .config import Config
-from .detect import detect_interlace, detect_duplicates, get_fps
+from .detect import detect_interlace, detect_duplicates, get_fps, get_resolution
 from .encode import build_vcodec_flags, fast_scale_frame, stream_frames
 from .jellyfin import Segments, get_segments
 
@@ -193,6 +193,8 @@ class Pipeline:
 
         (work / ".total_frames").write_text(str(frame_count))
         fps = get_fps(str(input_file))
+        src_w, src_h = get_resolution(str(input_file))
+        target_w, target_h = cfg.target_resolution(src_w, src_h)
 
         # 5. Sanity-check frame count vs map
         map_lines = sum(1 for _ in open(map_file))
@@ -225,7 +227,7 @@ class Pipeline:
             args = [
                 (work / "frames" / f"f_{int(fnum):06d}.png",
                  work / "scaled" / f"f_{int(fnum):06d}.png",
-                 cfg.target_width, cfg.target_height)
+                 target_w, target_h)
                 for fnum in skip_frames
             ]
             with multiprocessing.Pool() as pool:

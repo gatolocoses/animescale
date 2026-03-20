@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "animescale"
+version = "1.0.0"
+description = "AI anime upscaling pipeline using Real-ESRGAN and FFmpeg"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# No pip dependencies — uses only Python stdlib + system binaries (ffmpeg, realesrgan-ncnn-vulkan)
+
+[project.scripts]
+animescale = "animescale.cli:main"
+animescale-monitor = "animescale.monitor:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["animescale"]

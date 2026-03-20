@@ -30,6 +30,18 @@ class FrameMapStats:
         )
 
 
+def get_resolution(input_file: str) -> tuple[int, int]:
+    """Return (width, height) of the first video stream."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", input_file],
+        capture_output=True, text=True,
+    )
+    w, h = result.stdout.strip().split(",")
+    return int(w), int(h)
+
+
 def get_fps(input_file: str) -> float:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",

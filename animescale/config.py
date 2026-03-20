@@ -21,10 +21,6 @@ class Config:
     jellyfin_url: str = "http://localhost:8096"
     jellyfin_api_key: str = ""
 
-    @property
-    def target_width(self) -> int:
-        return 1920 * self.scale
-
-    @property
-    def target_height(self) -> int:
-        return 1080 * self.scale
+    def target_resolution(self, source_width: int, source_height: int) -> tuple[int, int]:
+        """Compute output resolution from the actual source dimensions."""
+        return source_width * self.scale, source_height * self.scale
