@@ -174,11 +174,12 @@ class Pipeline:
         # 4. Extract frames
         log.info(f"{prefix} Extracting frames...")
         extract_log = work / "extract.log"
-        result = subprocess.run(
-            ["ffmpeg", "-i", str(input_file), *vf_extract,
-             "-q:v", "1", str(work / "frames" / "f_%06d.png"), "-y"],
-            stderr=open(extract_log, "w"),
-        )
+        with open(extract_log, "w") as extract_log_fh:
+            result = subprocess.run(
+                ["ffmpeg", "-i", str(input_file), *vf_extract,
+                 "-q:v", "1", str(work / "frames" / "f_%06d.png"), "-y"],
+                stderr=extract_log_fh,
+            )
         if result.returncode != 0:
             log.info(f"{prefix} FAILED: Frame extraction error")
             log.info(f"  {extract_log.read_text().splitlines()[-2:]}")
@@ -196,31 +197,30 @@ class Pipeline:
         src_w, src_h = get_resolution(str(input_file))
         target_w, target_h = cfg.target_resolution(src_w, src_h)
 
-        # 5. Sanity-check frame count vs map
-        map_lines = sum(1 for _ in open(map_file))
-        if map_lines != frame_count:
-            log.info(f"{prefix} Frame mismatch (map={map_lines}, frames={frame_count}) — disabling dedup")
-            with open(map_file, "w") as f:
-                for n in range(1, frame_count + 1):
-                    f.write(f"{n} {n} 1 ai\n")
+        # 5. Sanity-check frame count vs map; parse map once for all downstream use
+        with open(map_file) as fh:
+            map_entries = [line.split() for line in fh if line.strip()]
+
+        # Discard malformed lines (shouldn't happen, but be defensive)
+        map_entries = [p for p in map_entries if len(p) == 4]
+
+        if len(map_entries) != frame_count:
+            log.info(f"{prefix} Frame mismatch (map={len(map_entries)}, frames={frame_count}) — disabling dedup")
+            map_entries = [[str(n), str(n), "1", "ai"] for n in range(1, frame_count + 1)]
+            with open(map_file, "w") as fh:
+                for p in map_entries:
+                    fh.write(" ".join(p) + "\n")
 
         # 6. Link unique AI frames and fast-scale skip frames
-        unique_count = sum(
-            1 for line in open(map_file)
-            if (p := line.split()) and p[3] == "ai" and p[0] == p[1]
-        )
-        skip_frames = [
-            line.split()[0] for line in open(map_file)
-            if line.split()[3] == "skip"
-        ]
+        unique_entries = [p for p in map_entries if p[3] == "ai" and p[0] == p[1]]
+        skip_frames = [p[0] for p in map_entries if p[3] == "skip"]
+        unique_count = len(unique_entries)
 
         log.info(f"{prefix} Linking {unique_count} unique frames...")
-        for line in open(map_file):
-            parts = line.split()
-            if parts[3] == "ai" and parts[0] == parts[1]:
-                src = work / "frames" / f"f_{int(parts[0]):06d}.png"
-                dst = work / "unique" / src.name
-                os.link(src, dst)
+        for p in unique_entries:
+            src = work / "frames" / f"f_{int(p[0]):06d}.png"
+            dst = work / "unique" / src.name
+            os.link(src, dst)
 
         if skip_frames:
             log.info(f"{prefix} Fast-scaling {len(skip_frames)} skip frames (parallel)...")
@@ -238,13 +238,14 @@ class Pipeline:
         # 7. Upscale unique content frames in background
         log.info(f"{prefix} Upscaling {unique_count} frames ({cfg.scale}x)...")
         upscale_log = work / "upscale.log"
+        upscale_log_fh = open(upscale_log, "w")
         self._upscaler = subprocess.Popen(
             ["realesrgan-ncnn-vulkan",
              "-i", str(work / "unique"),
              "-o", str(work / "upscaled_unique"),
              "-n", cfg.model, "-s", str(cfg.scale), "-f", "png",
              "-g", cfg.gpu],
-            stdout=open(upscale_log, "w"), stderr=subprocess.STDOUT,
+            stdout=upscale_log_fh, stderr=subprocess.STDOUT,
         )
 
         # 8. Stream frames to encoder in parallel
@@ -258,23 +259,29 @@ class Pipeline:
 
         video_file = work / "video.mkv"
         encode_log = work / "encode.log"
+        encode_log_fh = open(encode_log, "w")
         encoder = subprocess.Popen(
             ["ffmpeg",
              "-framerate", str(fps), "-f", "image2pipe", "-vcodec", "png", "-i", "-",
              *vcodec_flags,
              str(video_file), "-y"],
             stdin=subprocess.PIPE,
-            stderr=open(encode_log, "w"),
+            stderr=encode_log_fh,
         )
 
         pipe_ok = True
         try:
             stream_frames(map_file, work, self._upscaler.pid, encoder.stdin)
-            encoder.stdin.close()
         except Exception as e:
             log.info(f"{prefix} Streaming error: {e}")
             pipe_ok = False
-            encoder.stdin.close()
+        finally:
+            try:
+                encoder.stdin.close()
+            except OSError:
+                pass
+            upscale_log_fh.close()
+            encode_log_fh.close()
 
         encoder.wait()
         pipe_exit = encoder.returncode

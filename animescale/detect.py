@@ -38,8 +38,13 @@ def get_resolution(input_file: str) -> tuple[int, int]:
          "-of", "csv=p=0", input_file],
         capture_output=True, text=True,
     )
-    w, h = result.stdout.strip().split(",")
-    return int(w), int(h)
+    parts = result.stdout.strip().split(",")
+    if len(parts) != 2:
+        raise RuntimeError(
+            f"Could not read resolution from {input_file!r}: "
+            f"ffprobe returned {result.stdout.strip()!r}"
+        )
+    return int(parts[0]), int(parts[1])
 
 
 def get_fps(input_file: str) -> float:
@@ -50,10 +55,18 @@ def get_fps(input_file: str) -> float:
         capture_output=True, text=True,
     )
     fps_str = result.stdout.strip()
-    if "/" in fps_str:
-        num, den = map(int, fps_str.split("/"))
-        return num / den
-    return float(fps_str)
+    try:
+        if "/" in fps_str:
+            num, den = map(int, fps_str.split("/"))
+            if den == 0:
+                raise ValueError("zero denominator")
+            return num / den
+        return float(fps_str)
+    except (ValueError, ZeroDivisionError) as e:
+        raise RuntimeError(
+            f"Could not parse frame rate from {input_file!r}: "
+            f"ffprobe returned {fps_str!r}"
+        ) from e
 
 
 def detect_interlace(input_file: str) -> bool:
@@ -116,6 +129,7 @@ def detect_duplicates(
     intro_start_f = to_frame(intro_start)
     intro_end_f = to_frame(intro_end)
     credits_start_f = to_frame(credits_start)
+    credits_end_f = to_frame(credits_end)
 
     CHUNK = 128 * 72
     MAX_DUP_RUN = 6  # real telecine/on-twos dupes never exceed 3-4 frames
@@ -132,39 +146,45 @@ def detect_duplicates(
     frame_num = 0
     dup_run = 0
 
-    while True:
-        data = proc.stdout.read(CHUNK)
-        if len(data) < CHUNK:
-            break
-        frame_num += 1
+    try:
+        while True:
+            data = proc.stdout.read(CHUNK)
+            if len(data) < CHUNK:
+                break
+            frame_num += 1
 
-        in_intro = intro_start_f >= 0 and intro_start_f <= frame_num <= intro_end_f
-        in_credits = credits_start_f >= 0 and credits_start_f <= frame_num
-        mode: Mode = "skip" if (in_intro or in_credits) else "ai"
+            in_intro = intro_start_f >= 0 and intro_start_f <= frame_num <= intro_end_f
+            in_credits = (
+                credits_start_f >= 0
+                and credits_start_f <= frame_num
+                and (credits_end_f < 0 or frame_num <= credits_end_f)
+            )
+            mode: Mode = "skip" if (in_intro or in_credits) else "ai"
 
-        is_unique = True
-        if prev_data is not None:
-            diff = sum(abs(a - b) for a, b in zip(data, prev_data)) / CHUNK
-            if diff < threshold:
-                is_unique = False
+            is_unique = True
+            if prev_data is not None:
+                diff = sum(abs(a - b) for a, b in zip(data, prev_data)) / CHUNK
+                if diff < threshold:
+                    is_unique = False
 
-        # Cap consecutive duplicate runs to prevent frozen video on slow pans/static shots
-        if not is_unique and mode == "ai":
-            dup_run += 1
-            if dup_run >= MAX_DUP_RUN:
-                is_unique = True
+            # Cap consecutive duplicate runs to prevent frozen video on slow pans/static shots
+            if not is_unique and mode == "ai":
+                dup_run += 1
+                if dup_run >= MAX_DUP_RUN:
+                    is_unique = True
+                    dup_run = 0
+            else:
                 dup_run = 0
-        else:
-            dup_run = 0
 
-        # Only ai frames can be sources — skip frames must never become current_unique
-        # or the consumer will wait for an upscaled file that was never produced.
-        if is_unique and mode == "ai":
-            current_unique = frame_num
-        entries.append(FrameEntry(frame_num, current_unique, False, mode))
-        prev_data = data
-
-    proc.wait()
+            # Only ai frames can be sources — skip frames must never become current_unique
+            # or the consumer will wait for an upscaled file that was never produced.
+            if is_unique and mode == "ai":
+                current_unique = frame_num
+            entries.append(FrameEntry(frame_num, current_unique, False, mode))
+            prev_data = data
+    finally:
+        proc.stdout.close()
+        proc.wait()
 
     # Mark is_last: true when the next frame uses a different source unique
     for i, entry in enumerate(entries):

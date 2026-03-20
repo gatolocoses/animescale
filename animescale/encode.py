@@ -36,7 +36,8 @@ def wait_frame(path: Path, upscaler_pid: int) -> bool:
     while not path.exists():
         try:
             os.kill(upscaler_pid, 0)
-        except ProcessLookupError:
+        except OSError:
+            # ProcessLookupError (no such process) or PermissionError — upscaler gone
             return False
         time.sleep(0.08)
 
@@ -53,12 +54,14 @@ def wait_frame(path: Path, upscaler_pid: int) -> bool:
 
 
 def fast_scale_frame(src: Path, dst: Path, width: int, height: int) -> None:
-    subprocess.run(
+    result = subprocess.run(
         ["ffmpeg", "-i", str(src),
          "-vf", f"scale={width}:{height}:flags=lanczos",
          str(dst), "-y"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"fast_scale_frame failed for {src} → {dst}")
 
 
 def stream_frames(map_file: Path, work: Path, upscaler_pid: int, out: IO[bytes]) -> int:
