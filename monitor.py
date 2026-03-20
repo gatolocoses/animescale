@@ -198,17 +198,10 @@ def main():
         print()
         print("-------------------------  SYSTEM  -------------------------")
 
-        igpu = "?"
-        gpu1 = "?"
-        for card, label in [("card0", "igpu"), ("card1", "gpu1")]:
-            p = Path(f"/sys/class/drm/{card}/device/gpu_busy_percent")
-            if p.exists():
-                val = p.read_text().strip()
-                if label == "igpu":
-                    igpu = val
-                else:
-                    gpu1 = val
-        print(f"  GPU:   iGPU {igpu}%  |  RX 6650 XT {gpu1}%")
+        gpu_cards = sorted(Path("/sys/class/drm").glob("card*/device/gpu_busy_percent"))
+        gpu_usages = [p.read_text().strip() for p in gpu_cards]
+        gpu_line = "  ".join(f"GPU{i} {u}%" for i, u in enumerate(gpu_usages)) or "?"
+        print(f"  GPU:   {gpu_line}")
 
         sensors = subprocess.run(["sensors"], capture_output=True, text=True)
         cpu_temp = gpu_temp = "?"
