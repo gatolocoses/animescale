@@ -38,7 +38,15 @@ def check_deps() -> None:
         if not shutil.which(cmd)
     ]
     if missing:
-        sys.exit(f"Missing dependencies: {', '.join(missing)}")
+        hint = {
+            "realesrgan-ncnn-vulkan": "  Install from: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan",
+            "ffmpeg":  "  Install with: sudo pacman -S ffmpeg   (or your distro's equivalent)",
+            "ffprobe": "  Install with: sudo pacman -S ffmpeg   (ffprobe is bundled with ffmpeg)",
+        }
+        msg = "Missing required programs:\n" + "\n".join(
+            f"  - {cmd}\n{hint.get(cmd, '')}" for cmd in missing
+        )
+        sys.exit(msg)
 
 
 class Pipeline:
@@ -104,7 +112,10 @@ class Pipeline:
 
             gb = free_gb(temp_dir)
             if gb < self.cfg.min_free_gb:
-                log.info(f"{prefix} {input_file.name} — {gb}GB free < {self.cfg.min_free_gb}GB. Stopping.")
+                log.warning(
+                    f"{prefix} {input_file.name} — only {gb}GB free in {temp_dir}, "
+                    f"need {self.cfg.min_free_gb}GB. Stopping to avoid filling disk."
+                )
                 failed += 1
                 break
 
@@ -181,14 +192,17 @@ class Pipeline:
                 stderr=extract_log_fh,
             )
         if result.returncode != 0:
-            log.info(f"{prefix} FAILED: Frame extraction error")
-            log.info(f"  {extract_log.read_text().splitlines()[-2:]}")
+            log.error(f"{prefix} FAILED: could not extract frames from {input_file.name}")
+            last_lines = extract_log.read_text().splitlines()
+            for line in last_lines[-5:]:
+                if line.strip():
+                    log.error(f"  ffmpeg: {line.strip()}")
             return False
 
         frame_files = list((work / "frames").glob("*.png"))
         frame_count = len(frame_files)
         if frame_count == 0:
-            log.info(f"{prefix} FAILED: No frames extracted")
+            log.error(f"{prefix} FAILED: ffmpeg ran but produced no frames — is the file a valid video?")
             shutil.rmtree(work)
             return False
 
@@ -205,7 +219,7 @@ class Pipeline:
         map_entries = [p for p in map_entries if len(p) == 4]
 
         if len(map_entries) != frame_count:
-            log.info(f"{prefix} Frame mismatch (map={len(map_entries)}, frames={frame_count}) — disabling dedup")
+            log.warning(f"{prefix} Frame count mismatch (analysis={len(map_entries)}, extracted={frame_count}) — dedup disabled for this file")
             map_entries = [[str(n), str(n), "1", "ai"] for n in range(1, frame_count + 1)]
             with open(map_file, "w") as fh:
                 for p in map_entries:
@@ -273,7 +287,7 @@ class Pipeline:
         try:
             stream_frames(map_file, work, self._upscaler.pid, encoder.stdin)
         except Exception as e:
-            log.info(f"{prefix} Streaming error: {e}")
+            log.error(f"{prefix} Streaming error: {e}")
             pipe_ok = False
         finally:
             try:
@@ -305,9 +319,17 @@ class Pipeline:
 
         # 9. Validate and move output
         if not pipe_ok or pipe_exit != 0 or not out_file.exists():
-            log.info(f"{prefix} FAILED (pipe={pipe_exit}, upscaler={upscale_exit})")
-            log.info(f"  Upscaler: {upscale_log.read_text().splitlines()[-2:]}")
-            log.info(f"  Encoder:  {encode_log.read_text().splitlines()[-2:]}")
+            log.error(f"{prefix} FAILED encoding {input_file.name}")
+            upscale_tail = [l.strip() for l in upscale_log.read_text().splitlines() if l.strip()][-3:]
+            encode_tail  = [l.strip() for l in encode_log.read_text().splitlines()  if l.strip()][-3:]
+            if upscale_exit != 0 and upscale_tail:
+                log.error(f"  Upscaler (exit {upscale_exit}) — check model name ({cfg.model!r}):")
+                for line in upscale_tail:
+                    log.error(f"    {line}")
+            if pipe_exit != 0 and encode_tail:
+                log.error(f"  Encoder (exit {pipe_exit}):")
+                for line in encode_tail:
+                    log.error(f"    {line}")
             return False
 
         probe = subprocess.run(
@@ -316,7 +338,7 @@ class Pipeline:
             capture_output=True,
         )
         if probe.returncode != 0:
-            log.info(f"{prefix} FAILED: Output corrupt")
+            log.error(f"{prefix} FAILED: Output file appears corrupt — check disk space and encoder logs at {encode_log}")
             return False
 
         size_mb = out_file.stat().st_size // (1024 * 1024)
