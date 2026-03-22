@@ -258,7 +258,7 @@ class Pipeline:
              "-i", str(work / "unique"),
              "-o", str(work / "upscaled_unique"),
              "-n", cfg.model, "-s", str(cfg.scale), "-f", "png",
-             "-g", cfg.gpu],
+             "-g", cfg.gpu, "-m", "/usr/share/realesrgan-ncnn-vulkan/models"],
             stdout=upscale_log_fh, stderr=subprocess.STDOUT,
         )
 
