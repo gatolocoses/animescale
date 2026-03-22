@@ -34,34 +34,27 @@ cd animescale
 pip install .
 ```
 
-Or run directly without installing:
-
-```bash
-git clone https://github.com/gatolocoses/animescale
-cd animescale
-./upscale.py --help
-```
 
 ## Usage
 
 ```bash
 # Upscale a single file
-./upscale.py input.mkv /output/dir/
+animescale input.mkv /output/dir/
 
 # Upscale all episodes in a directory
-./upscale.py /input/dir/ /output/dir/
+animescale /input/dir/ /output/dir/
 
 # 4x upscale with a different codec
-./upscale.py /input/dir/ /output/dir/ --scale 4 --model realesrgan-x4plus-anime --codec libx264
+animescale /input/dir/ /output/dir/ --scale 4 --model realesrgan-x4plus-anime --codec libx264
 
 # Monitor progress in a separate terminal
-./monitor.py
+animescale-monitor
 ```
 
 ## Options
 
 ```
-./upscale.py <input> <output> [options]
+animescale <input> <output> [options]
 
   --scale {2,4}             upscale factor (default: 2)
   --model MODEL             Real-ESRGAN model name (default: realesr-animevideov3)

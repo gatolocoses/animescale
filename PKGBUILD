@@ -1,4 +1,4 @@
-# Maintainer: your name <your@email.com>
+# Maintainer: gatolocoses <gatolocoses@gmail.com>
 pkgname=animescale
 pkgver=1.0.0
 pkgrel=1
