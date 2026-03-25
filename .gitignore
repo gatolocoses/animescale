@@ -1,2 +1,6 @@
 *.log
 .upscale.lock
+__pycache__/
+*.py[cod]
+dist/
+*.egg-info/

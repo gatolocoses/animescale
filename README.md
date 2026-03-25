@@ -10,6 +10,9 @@ AI upscaling pipeline for anime video. Built around Real-ESRGAN + ffmpeg with a 
 - **Jellyfin Intro Skipper integration** — intro and credits are fast-scaled with lanczos instead of AI upscaled
 - **10-bit HEVC encoding** — eliminates gradient banding, CRF 14 for near-transparent quality
 - **Parallel streaming** — upscaler and encoder run simultaneously, no waiting for all frames before encoding starts
+- **Hardware encoding** — NVENC (NVIDIA), VAAPI (AMD/Intel), AMF (AMD) via `--codec`
+- **Resume support** — `--resume` picks up an interrupted upscale run without re-extracting frames
+- **Dry run** — `--dry-run` previews what would be processed without doing any work
 
 ## Requirements
 
@@ -44,8 +47,14 @@ animescale input.mkv /output/dir/
 # Upscale all episodes in a directory
 animescale /input/dir/ /output/dir/
 
-# 4x upscale with a different codec
-animescale /input/dir/ /output/dir/ --scale 4 --model realesrgan-x4plus-anime --codec libx264
+# 4x upscale with GPU-accelerated encoding (NVIDIA)
+animescale /input/dir/ /output/dir/ --scale 4 --codec hevc_nvenc
+
+# Preview what would be processed without doing any work
+animescale /input/dir/ /output/dir/ --dry-run
+
+# Resume an interrupted upscale (reuses already-extracted frames)
+animescale input.mkv /output/dir/ --resume
 
 # Monitor progress in a separate terminal
 animescale-monitor
@@ -56,13 +65,33 @@ animescale-monitor
 ```
 animescale <input> <output> [options]
 
+video quality:
   --scale {2,4}             upscale factor (default: 2)
   --model MODEL             Real-ESRGAN model name (default: realesr-animevideov3)
-  --codec CODEC             libx264 | libx265 | libsvtav1 (default: libx265)
+  --models-dir PATH         directory containing model files
+                            (default: /usr/share/realesrgan-ncnn-vulkan/models)
+  --codec CODEC             SW: libx264 | libx265 | libsvtav1
+                            HW: h264_nvenc | hevc_nvenc (NVIDIA)
+                                hevc_vaapi | h264_vaapi (AMD/Intel)
+                                hevc_amf   | h264_amf   (AMD)
+                            (default: libx265)
   --crf INT                 quality — lower is better (default: 14)
-  --preset PRESET           encoder preset (default: medium)
+                            used as -cq for NVENC, -qp for VAAPI/AMF
+  --preset PRESET           encoder speed preset (default: medium)
+                            SW: ultrafast…placebo  |  HW: fast/medium/slow
+  --vaapi-device PATH       VAAPI render node (default: /dev/dri/renderD128)
+
+performance:
   --gpu INT                 Vulkan GPU device index (default: 0)
   --dup-threshold FLOAT     duplicate detection sensitivity, lower = stricter (default: 1.0)
+  --temp-dir PATH           work directory for temporary files (default: /tmp/animescale)
+  --min-free-gb GB          abort if temp dir has less than this much free space (default: 25)
+
+misc:
+  --dry-run                 show what would be processed without doing any work
+  --resume                  reuse extracted frames from an interrupted run
+
+jellyfin intro skipper:
   --jellyfin-url URL        Jellyfin server URL (default: http://localhost:8096)
   --jellyfin-key KEY        Jellyfin API key — enables intro/credits fast-scaling
 ```

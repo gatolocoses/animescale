@@ -7,7 +7,8 @@ import os
 class Config:
     scale: int = 2                              # 2 or 4
     model: str = "realesr-animevideov3"         # 2x: realesr-animevideov3, 4x: realesrgan-x4plus-anime
-    codec: str = "libx265"                      # libx264 | libx265 | libsvtav1
+    models_dir: str = "/usr/share/realesrgan-ncnn-vulkan/models"
+    codec: str = "libx265"                      # libx264 | libx265 | libsvtav1 | h264_nvenc | hevc_nvenc | hevc_vaapi | h264_vaapi | hevc_amf | h264_amf
     crf: int = 14                               # near-transparent for anime
     preset: str = "medium"
     pix_fmt: str = "yuv420p10le"                # 10-bit eliminates banding
@@ -16,6 +17,9 @@ class Config:
     min_free_gb: int = 25
     dup_threshold: float = 1.0                  # lower = stricter duplicate detection
     gpu: str = "0"
+    dry_run: bool = False
+    resume: bool = False
+    vaapi_device: str = "/dev/dri/renderD128"
 
     # Jellyfin Intro Skipper — set api_key to enable
     jellyfin_url: str = "http://localhost:8096"

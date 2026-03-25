@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from .config import Config
-from .detect import detect_interlace, detect_duplicates, get_fps, get_resolution
+from .detect import detect_interlace, detect_duplicates, get_fps, get_resolution, get_total_frames
 from .encode import build_vcodec_flags, fast_scale_frame, stream_frames
 from .jellyfin import Segments, get_segments
 
@@ -74,28 +74,53 @@ class Pipeline:
         sys.exit(130)
 
     def run(self, input_path: Path) -> None:
-        check_deps()
+        if not self.cfg.dry_run:
+            check_deps()
 
         files = find_videos(input_path)
         if not files:
             sys.exit(f"No video files found in {input_path}")
 
         temp_dir = Path(self.cfg.temp_dir)
-        temp_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        vcodec_flags = build_vcodec_flags(self.cfg)
+        vcodec_pre, vcodec_post = build_vcodec_flags(self.cfg)
         total = len(files)
 
         log.info("")
         log.info("==========================================")
-        log.info("Anime Upscale Pipeline")
+        log.info("Anime Upscale Pipeline" + (" [DRY RUN]" if self.cfg.dry_run else ""))
         log.info(f"Input:  {input_path} ({total} files)")
         log.info(f"Output: {self.output_dir} (.{self.cfg.output_ext})")
         log.info(f"Config: {self.cfg.scale}x {self.cfg.model} | {self.cfg.codec} CRF {self.cfg.crf} {self.cfg.preset} 10-bit")
         jellyfin_status = "enabled" if self.cfg.jellyfin_api_key else "disabled"
         log.info(f"GPU:    {self.cfg.gpu} | Dedup: {self.cfg.dup_threshold} | Jellyfin: {jellyfin_status}")
+        if self.cfg.resume:
+            log.info("Resume: enabled — will reuse extracted frames and skip already-upscaled frames")
         log.info("==========================================")
+
+        # --- Dry run: just probe and report ---
+        if self.cfg.dry_run:
+            done = skipped = 0
+            for i, input_file in enumerate(files, 1):
+                output_file = self.output_dir / f"{input_file.stem}.{self.cfg.output_ext}"
+                if output_file.exists():
+                    log.info(f"[{i}/{total}] {input_file.name} — already done, would skip")
+                    skipped += 1
+                    continue
+                total_frames = get_total_frames(str(input_file))
+                try:
+                    w, h = get_resolution(str(input_file))
+                    res = f"{w}x{h} → {w * self.cfg.scale}x{h * self.cfg.scale}"
+                except Exception:
+                    res = "resolution unknown"
+                log.info(f"[{i}/{total}] {input_file.name} — {res}, ~{total_frames} frames")
+                done += 1
+            log.info("")
+            log.info(f"Dry run complete: {done} to process, {skipped} already done")
+            return
+
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
         done = skipped = failed = 0
 
@@ -119,15 +144,9 @@ class Pipeline:
                 failed += 1
                 break
 
-            if work.exists():
-                shutil.rmtree(work)
-            for sub in ("frames", "unique", "upscaled_unique", "scaled"):
-                (work / sub).mkdir(parents=True)
-
-            log.info("")
-            log.info(f"{prefix} ===== {input_file.name} =====")
-
-            success = self._process_file(input_file, output_file, work, vcodec_flags, prefix)
+            success = self._process_file(
+                input_file, output_file, work, vcodec_pre, vcodec_post, prefix
+            )
             if success:
                 done += 1
             else:
@@ -144,20 +163,49 @@ class Pipeline:
         input_file: Path,
         output_file: Path,
         work: Path,
-        vcodec_flags: list[str],
+        vcodec_pre: list[str],
+        vcodec_post: list[str],
         prefix: str,
     ) -> bool:
         cfg = self.cfg
 
-        # 1. Detect interlacing
-        log.info(f"{prefix} Detecting interlacing...")
-        deinterlace = detect_interlace(str(input_file))
-        if deinterlace:
-            log.info(f"{prefix} Interlaced/telecined — will deinterlace")
-            vf_extract = ["-vf", "yadif=mode=0:parity=0:deint=0"]
-        else:
-            log.info(f"{prefix} Progressive — no deinterlace needed")
+        # --- Resume: check if we can reuse extracted frames ---
+        resuming = False
+        map_file = work / "frame_map.txt"
+
+        if cfg.resume and work.exists() and map_file.exists():
+            existing_frames = list((work / "frames").glob("*.png")) if (work / "frames").exists() else []
+            map_lines = [l for l in map_file.read_text().splitlines() if l.strip()]
+            if existing_frames and len(existing_frames) == len(map_lines):
+                resuming = True
+                log.info(f"{prefix} Resume: found {len(existing_frames)} extracted frames and frame map — skipping extraction")
+            else:
+                log.info(f"{prefix} Resume: work dir incomplete ({len(existing_frames)} frames, {len(map_lines)} map entries) — restarting")
+
+        if not resuming:
+            if work.exists():
+                shutil.rmtree(work)
+            for sub in ("frames", "unique", "upscaled_unique", "scaled"):
+                (work / sub).mkdir(parents=True)
+
+        log.info("")
+        log.info(f"{prefix} ===== {input_file.name} =====")
+
+        # 1. Detect interlacing (skip if resuming)
+        if resuming:
+            # Detect quickly without sampling (just probe)
+            deinterlace = False
             vf_extract = []
+            log.info(f"{prefix} Resume: skipping interlace detection")
+        else:
+            log.info(f"{prefix} Detecting interlacing...")
+            deinterlace = detect_interlace(str(input_file))
+            if deinterlace:
+                log.info(f"{prefix} Interlaced/telecined — will deinterlace")
+                vf_extract = ["-vf", "yadif=mode=0:parity=0:deint=0"]
+            else:
+                log.info(f"{prefix} Progressive — no deinterlace needed")
+                vf_extract = []
 
         # 2. Query Jellyfin for intro/outro
         segments = Segments()
@@ -172,37 +220,46 @@ class Pipeline:
             else:
                 log.info(f"{prefix} No Jellyfin segments found — full AI upscale")
 
-        # 3. Detect duplicates + mark segments
-        log.info(f"{prefix} Analyzing frames...")
-        map_file = work / "frame_map.txt"
-        stats = detect_duplicates(
-            str(input_file), str(map_file), cfg.dup_threshold, deinterlace,
-            segments.intro_start, segments.intro_end,
-            segments.credits_start, segments.credits_end,
-        )
-        log.info(f"{prefix} {stats.summary()}")
-
-        # 4. Extract frames
-        log.info(f"{prefix} Extracting frames...")
-        extract_log = work / "extract.log"
-        with open(extract_log, "w") as extract_log_fh:
-            result = subprocess.run(
-                ["ffmpeg", "-i", str(input_file), *vf_extract,
-                 "-q:v", "1", str(work / "frames" / "f_%06d.png"), "-y"],
-                stderr=extract_log_fh,
+        # 3. Detect duplicates + mark segments (skip if resuming with valid map)
+        if resuming:
+            log.info(f"{prefix} Resume: reusing existing frame map")
+            with open(map_file) as fh:
+                map_entries = [line.split() for line in fh if line.strip()]
+            map_entries = [p for p in map_entries if len(p) == 4]
+        else:
+            log.info(f"{prefix} Analyzing frames...")
+            stats = detect_duplicates(
+                str(input_file), str(map_file), cfg.dup_threshold, deinterlace,
+                segments.intro_start, segments.intro_end,
+                segments.credits_start, segments.credits_end,
             )
-        if result.returncode != 0:
-            log.error(f"{prefix} FAILED: could not extract frames from {input_file.name}")
-            last_lines = extract_log.read_text().splitlines()
-            for line in last_lines[-5:]:
-                if line.strip():
-                    log.error(f"  ffmpeg: {line.strip()}")
-            return False
+            log.info(f"{prefix} {stats.summary()}")
+            with open(map_file) as fh:
+                map_entries = [line.split() for line in fh if line.strip()]
+            map_entries = [p for p in map_entries if len(p) == 4]
+
+        # 4. Extract frames (skip if resuming)
+        if not resuming:
+            log.info(f"{prefix} Extracting frames...")
+            extract_log = work / "extract.log"
+            with open(extract_log, "w") as extract_log_fh:
+                result = subprocess.run(
+                    ["ffmpeg", "-i", str(input_file), *vf_extract,
+                     "-q:v", "1", str(work / "frames" / "f_%06d.png"), "-y"],
+                    stderr=extract_log_fh,
+                )
+            if result.returncode != 0:
+                log.error(f"{prefix} FAILED: could not extract frames from {input_file.name}")
+                last_lines = extract_log.read_text().splitlines()
+                for line in last_lines[-5:]:
+                    if line.strip():
+                        log.error(f"  ffmpeg: {line.strip()}")
+                return False
 
         frame_files = list((work / "frames").glob("*.png"))
         frame_count = len(frame_files)
         if frame_count == 0:
-            log.error(f"{prefix} FAILED: ffmpeg ran but produced no frames — is the file a valid video?")
+            log.error(f"{prefix} FAILED: no frames in work dir — is the file a valid video?")
             shutil.rmtree(work)
             return False
 
@@ -211,13 +268,7 @@ class Pipeline:
         src_w, src_h = get_resolution(str(input_file))
         target_w, target_h = cfg.target_resolution(src_w, src_h)
 
-        # 5. Sanity-check frame count vs map; parse map once for all downstream use
-        with open(map_file) as fh:
-            map_entries = [line.split() for line in fh if line.strip()]
-
-        # Discard malformed lines (shouldn't happen, but be defensive)
-        map_entries = [p for p in map_entries if len(p) == 4]
-
+        # 5. Sanity-check frame count vs map
         if len(map_entries) != frame_count:
             log.warning(f"{prefix} Frame count mismatch (analysis={len(map_entries)}, extracted={frame_count}) — dedup disabled for this file")
             map_entries = [[str(n), str(n), "1", "ai"] for n in range(1, frame_count + 1)]
@@ -230,19 +281,33 @@ class Pipeline:
         skip_frames = [p[0] for p in map_entries if p[3] == "skip"]
         unique_count = len(unique_entries)
 
-        log.info(f"{prefix} Linking {unique_count} unique frames...")
-        for p in unique_entries:
-            src = work / "frames" / f"f_{int(p[0]):06d}.png"
-            dst = work / "unique" / src.name
-            os.link(src, dst)
+        # Resume: only link frames not already in unique/ or upscaled_unique/
+        already_upscaled = set(p.name for p in (work / "upscaled_unique").glob("*.png"))
+        frames_to_link = [
+            p for p in unique_entries
+            if f"f_{int(p[0]):06d}.png" not in already_upscaled
+            and not (work / "unique" / f"f_{int(p[0]):06d}.png").exists()
+        ]
+        if frames_to_link:
+            log.info(f"{prefix} Linking {len(frames_to_link)} unique frames" +
+                     (f" ({unique_count - len(frames_to_link)} already upscaled)" if resuming and already_upscaled else "") + "...")
+            for p in frames_to_link:
+                src = work / "frames" / f"f_{int(p[0]):06d}.png"
+                dst = work / "unique" / src.name
+                if src.exists() and not dst.exists():
+                    os.link(src, dst)
 
-        if skip_frames:
-            log.info(f"{prefix} Fast-scaling {len(skip_frames)} skip frames (parallel)...")
+        skip_to_scale = [
+            fnum for fnum in skip_frames
+            if not (work / "scaled" / f"f_{int(fnum):06d}.png").exists()
+        ]
+        if skip_to_scale:
+            log.info(f"{prefix} Fast-scaling {len(skip_to_scale)} skip frames (parallel)...")
             args = [
                 (work / "frames" / f"f_{int(fnum):06d}.png",
                  work / "scaled" / f"f_{int(fnum):06d}.png",
                  target_w, target_h)
-                for fnum in skip_frames
+                for fnum in skip_to_scale
             ]
             with multiprocessing.Pool() as pool:
                 pool.starmap(fast_scale_frame, args)
@@ -250,7 +315,15 @@ class Pipeline:
         log.info(f"{prefix} {frame_count} frames @ {fps} fps — AI: {unique_count}, fast-scale: {len(skip_frames)} ({free_gb(work)}GB free)")
 
         # 7. Upscale unique content frames in background
-        log.info(f"{prefix} Upscaling {unique_count} frames ({cfg.scale}x)...")
+        # Resume: only upscale frames not already in upscaled_unique/
+        unique_to_upscale = list((work / "unique").glob("*.png"))
+        remaining_count = len(unique_to_upscale)
+
+        if resuming and already_upscaled:
+            log.info(f"{prefix} Resume: {len(already_upscaled)} frames already upscaled, upscaling remaining {remaining_count}...")
+        else:
+            log.info(f"{prefix} Upscaling {remaining_count} frames ({cfg.scale}x)...")
+
         upscale_log = work / "upscale.log"
         upscale_log_fh = open(upscale_log, "w")
         self._upscaler = subprocess.Popen(
@@ -258,7 +331,7 @@ class Pipeline:
              "-i", str(work / "unique"),
              "-o", str(work / "upscaled_unique"),
              "-n", cfg.model, "-s", str(cfg.scale), "-f", "png",
-             "-g", cfg.gpu, "-m", "/usr/share/realesrgan-ncnn-vulkan/models"],
+             "-g", cfg.gpu, "-m", cfg.models_dir],
             stdout=upscale_log_fh, stderr=subprocess.STDOUT,
         )
 
@@ -276,8 +349,9 @@ class Pipeline:
         encode_log_fh = open(encode_log, "w")
         encoder = subprocess.Popen(
             ["ffmpeg",
+             *vcodec_pre,
              "-framerate", str(fps), "-f", "image2pipe", "-vcodec", "png", "-i", "-",
-             *vcodec_flags,
+             *vcodec_post,
              str(video_file), "-y"],
             stdin=subprocess.PIPE,
             stderr=encode_log_fh,

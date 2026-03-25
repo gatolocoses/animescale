@@ -47,6 +47,34 @@ def get_resolution(input_file: str) -> tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
+def get_total_frames(input_file: str) -> int:
+    """Return approximate total frame count via ffprobe (fast, no decode)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_frames",
+         "-of", "default=noprint_wrappers=1:nokey=1", input_file],
+        capture_output=True, text=True,
+    )
+    val = result.stdout.strip()
+    if val and val != "N/A":
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    # Fallback: duration × fps
+    try:
+        fps = get_fps(input_file)
+        dur_r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", input_file],
+            capture_output=True, text=True,
+        )
+        return int(float(dur_r.stdout.strip()) * fps)
+    except Exception:
+        return 0
+
+
 def get_fps(input_file: str) -> float:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",

@@ -1,6 +1,6 @@
 # Maintainer: gatolocoses <gatolocoses@gmail.com>
 pkgname=animescale
-pkgver=1.0.0
+pkgver=1.0.2
 pkgrel=1
 pkgdesc="AI anime upscaling pipeline using Real-ESRGAN and FFmpeg"
 arch=('x86_64')
